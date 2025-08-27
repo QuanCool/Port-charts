@@ -1,102 +1,114 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import io
 
-def create_container_volume_chart():
-    try:
-        # Set page config
-        st.set_page_config(page_title="Container Volume Analysis", layout="wide")
-        
-        # Add title
-        st.title("Container Volume Analysis")
-        
-        # File uploader
-        uploaded_file = st.file_uploader("Upload Excel file", type=['xlsx'])
-        
-        if uploaded_file is not None:
-            # Read the Excel file
-            df = pd.read_excel(uploaded_file, sheet_name="Monthly container volume")
-        else:
-            st.info("Please upload an Excel file containing container volume data")
-            st.stop()
+# Set page configuration
+st.set_page_config(
+    page_title="Container Volume Analysis",
+    layout="wide"
+)
 
-        # Convert Date column to datetime if it's not already
-        df['Date'] = pd.to_datetime(df['Date'])
+# Add title
+st.title("Monthly Container Volume Analysis")
 
-        # List of companies to plot
-        companies = ['SNP', 'GMD', 'PHP', 'VSC', 'CDN']
+# Read and process data
+@st.cache_data
+def load_data():
+    # Read the Excel file
+    df = pd.read_excel('Monthly container volume -  Quarterly sales and NPATMI_Jul 2025.xlsx', 
+                       sheet_name='Monthly container volume')
+    
+    # Convert date to datetime
+    df['Date'] = pd.to_datetime(df['Date'])
+    
+    return df
 
-        # Group data by Date and Company, summing the Total throughput
-        monthly_data = df.groupby(['Date', 'Company'])['Total throughput'].sum().reset_index()
-        
-        # Create a pivot table for easier plotting
-        pivot_data = monthly_data.pivot(
-            index='Date', 
-            columns='Company', 
-            values='Total throughput'
-        ).fillna(0)
+# Load the data
+try:
+    df = load_data()
+    
+    # Filter and process data
+    companies = ['SNP', 'GMD', 'PHP', 'VSC', 'CDN']
+    df_filtered = df[
+        (df['Company'].isin(companies)) & 
+        (df['Date'] >= '2020-01-01') &  # Include from January 2020
+        (df['Date'] <= '2025-07-31')    # Include up to July 2025
+    ]
 
-        # Format the date index to "Month-Year" with 2-digit year
-        pivot_data.index = pivot_data.index.strftime('%b-%y')
+    # Convert values from TEUs to Thousand TEUs
+    df_filtered['Total throughput'] = df_filtered['Total throughput'] / 1000
 
-        # Create the stacked column chart
-        fig, ax = plt.subplots(figsize=(15, 8))
-        
-        # Convert values to thousands and format the data
-        pivot_data_thousands = pivot_data / 1000
+    # Create pivot table
+    df_pivot = df_filtered.pivot_table(
+        index='Date',
+        columns='Company',
+        values='Total throughput',
+        aggfunc='sum'
+    ).fillna(0)
 
-        # Plot only the specified companies that exist in the data
-        available_companies = [c for c in companies if c in pivot_data.columns]
-        pivot_data_thousands[available_companies].plot(kind='bar', stacked=True, ax=ax)
+    # Create the stacked bar chart
+    fig, ax = plt.subplots(figsize=(15, 8))
+    df_pivot.plot(kind='bar', stacked=True, ax=ax)
 
-        # Customize the chart
-        plt.title('Monthly Container Volume by Company', fontsize=14, pad=20)
-        plt.xlabel('Date', fontsize=12)
-        plt.ylabel('Container Volume (Thousands TEUs)', fontsize=12)
-        plt.legend(title='Companies', bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.xticks(rotation=45, ha='right')
-        plt.grid(axis='y', linestyle='--', alpha=0.7)
+    # Customize the chart
+    plt.title('Monthly Container Volume by Company', fontsize=14, pad=20)
+    plt.xlabel('Date', fontsize=12)
+    plt.ylabel('Container Volume (Thousand TEUs)', fontsize=12)
+    plt.legend(title='Companies', bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    # Format x-axis labels to show Month-YY
+    ax = plt.gca()
+    date_labels = [d.strftime('%b-%y') for d in df_pivot.index]
+    ax.set_xticklabels(date_labels, rotation=45)
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
 
-        # Format y-axis labels to include thousand separator
-        def format_thousands(x, p):
-            return f'{int(x):,}'
-        ax.yaxis.set_major_formatter(plt.FuncFormatter(format_thousands))
+    # Adjust layout
+    plt.tight_layout()
 
-        # Add value labels on the bars
-        for c in ax.containers:
-            ax.bar_label(c, fmt='%.1f', label_type='center')
+    # Display the plot in Streamlit
+    st.pyplot(fig)
 
-        # Adjust layout to prevent label cutoff
-        plt.tight_layout()
+    # Add data analysis section
+    st.subheader("Data Analysis")
+    
+    # Show total volume by company
+    st.write("Total Container Volume by Company (Thousand TEUs)")
+    total_by_company = df_filtered.groupby('Company')['Total throughput'].sum().sort_values(ascending=False)
+    st.bar_chart(total_by_company)
+    
+    # Show the raw data with filters
+    st.subheader("Raw Data")
+    
+    # Add company filter
+    selected_companies = st.multiselect(
+        "Select Companies",
+        companies,
+        default=companies
+    )
+    
+    # Add date range filter
+    date_range = st.date_input(
+        "Select Date Range",
+        value=(df_filtered['Date'].min(), df_filtered['Date'].max()),
+        min_value=df_filtered['Date'].min().to_pydatetime(),
+        max_value=df_filtered['Date'].max().to_pydatetime()
+    )
+    
+    # Filter data based on selection
+    filtered_data = df_filtered[
+        (df_filtered['Company'].isin(selected_companies)) &
+        (df_filtered['Date'].dt.date >= date_range[0]) &
+        (df_filtered['Date'].dt.date <= date_range[1])
+    ]
+    
+    # Show filtered data
+    st.dataframe(
+        filtered_data.sort_values(['Date', 'Company'])[['Date', 'Company', 'Total throughput']]
+    )
 
-        # Display the chart in Streamlit
-        st.pyplot(fig)
-
-        # Add data table below the chart with enhanced formatting
-        st.subheader("Monthly Container Volume Data")
-        
-        # Format the data table with thousand separators and one decimal place
-        formatted_df = pivot_data_thousands.copy()
-        st.dataframe(
-            formatted_df.style
-            .format("{:,.1f}")
-            .set_caption("Values in Thousands TEUs")
-            .set_properties(**{'text-align': 'right'})
-            .background_gradient(cmap='Blues', axis=None)
-        )
-
-        # Add download button for the data in thousands
-        csv = pivot_data_thousands.to_csv()
-        st.download_button(
-            label="Download data as CSV (Values in Thousands TEUs)",
-            data=csv,
-            file_name="container_volume_data_thousands.csv",
-            mime="text/csv",
-        )
-
-    except Exception as e:
-        st.error(f"An error occurred: {str(e)}")
-
-if __name__ == "__main__":
-    create_container_volume_chart()
+except Exception as e:
+    st.error(f"An error occurred: {str(e)}")
+    
+# Add footer
+st.markdown("---")
+st.markdown("Data source: Monthly container volume report")
