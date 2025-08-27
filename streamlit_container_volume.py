@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+import io
 
 def create_container_volume_chart():
     try:
@@ -10,9 +11,15 @@ def create_container_volume_chart():
         # Add title
         st.title("Container Volume Analysis")
         
-        # Read the Excel file
-        excel_file = "Monthly container volume -  Quarterly sales and NPATMI_Jul 2025.xlsx"
-        df = pd.read_excel(excel_file, sheet_name="Monthly container volume")
+        # File uploader
+        uploaded_file = st.file_uploader("Upload Excel file", type=['xlsx'])
+        
+        if uploaded_file is not None:
+            # Read the Excel file
+            df = pd.read_excel(uploaded_file, sheet_name="Monthly container volume")
+        else:
+            st.info("Please upload an Excel file containing container volume data")
+            st.stop()
 
         # Convert Date column to datetime if it's not already
         df['Date'] = pd.to_datetime(df['Date'])
@@ -36,17 +43,29 @@ def create_container_volume_chart():
         # Create the stacked column chart
         fig, ax = plt.subplots(figsize=(15, 8))
         
+        # Convert values to thousands and format the data
+        pivot_data_thousands = pivot_data / 1000
+
         # Plot only the specified companies that exist in the data
         available_companies = [c for c in companies if c in pivot_data.columns]
-        pivot_data[available_companies].plot(kind='bar', stacked=True, ax=ax)
+        pivot_data_thousands[available_companies].plot(kind='bar', stacked=True, ax=ax)
 
         # Customize the chart
         plt.title('Monthly Container Volume by Company', fontsize=14, pad=20)
         plt.xlabel('Date', fontsize=12)
-        plt.ylabel('Container Volume', fontsize=12)
+        plt.ylabel('Container Volume (Thousands TEUs)', fontsize=12)
         plt.legend(title='Companies', bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.xticks(rotation=45, ha='right')
         plt.grid(axis='y', linestyle='--', alpha=0.7)
+
+        # Format y-axis labels to include thousand separator
+        def format_thousands(x, p):
+            return f'{int(x):,}'
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(format_thousands))
+
+        # Add value labels on the bars
+        for c in ax.containers:
+            ax.bar_label(c, fmt='%.1f', label_type='center')
 
         # Adjust layout to prevent label cutoff
         plt.tight_layout()
@@ -54,21 +73,28 @@ def create_container_volume_chart():
         # Display the chart in Streamlit
         st.pyplot(fig)
 
-        # Add data table below the chart
+        # Add data table below the chart with enhanced formatting
         st.subheader("Monthly Container Volume Data")
-        st.dataframe(pivot_data.style.format("{:,.0f}"))
+        
+        # Format the data table with thousand separators and one decimal place
+        formatted_df = pivot_data_thousands.copy()
+        st.dataframe(
+            formatted_df.style
+            .format("{:,.1f}")
+            .set_caption("Values in Thousands TEUs")
+            .set_properties(**{'text-align': 'right'})
+            .background_gradient(cmap='Blues', axis=None)
+        )
 
-        # Add download button for the data
-        csv = pivot_data.to_csv()
+        # Add download button for the data in thousands
+        csv = pivot_data_thousands.to_csv()
         st.download_button(
-            label="Download data as CSV",
+            label="Download data as CSV (Values in Thousands TEUs)",
             data=csv,
-            file_name="container_volume_data.csv",
+            file_name="container_volume_data_thousands.csv",
             mime="text/csv",
         )
 
-    except FileNotFoundError:
-        st.error(f"Error: Could not find the Excel file '{excel_file}'")
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
 
