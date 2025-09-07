@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import altair as alt
+import math
 
 # Set page configuration
 st.set_page_config(
@@ -77,11 +77,71 @@ st.title("Monthly Container Volume Analysis")
 def load_data():
     try:
         # Read the Excel file using relative path
-        df = pd.read_excel('Monthly container volume -  Quarterly sales and NPATMI_Jul 2025.xlsx', 
-                          sheet_name='Monthly container volume')
+        df = pd.read_excel(
+            'Monthly container volume -  Quarterly sales and NPATMI_Jul 2025.xlsx', 
+            sheet_name='Monthly container volume',
+            engine='openpyxl'
+        )
         
-        # Convert date to datetime
-        df['Date'] = pd.to_datetime(df['Date'])
+        # Convert and clean the Date column
+        df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m-%d', errors='coerce')
+        df = df.dropna(subset=['Date'])  # Remove rows with invalid dates
+        
+        # Normalize dates to first of each month
+        df['Date'] = df['Date'].dt.to_period('M').dt.to_timestamp()  # Convert to month start
+        
+        # Ensure data types are correct
+        df['Total throughput'] = pd.to_numeric(df['Total throughput'], errors='coerce')
+        df['Company'] = df['Company'].astype(str)
+        
+        # Check if the data is empty
+        if df.empty:
+            st.error("No data found in the Excel file.")
+            return pd.DataFrame()
+            
+        # Basic data validation
+        required_columns = ['Date', 'Company', 'Total throughput']
+        if not all(col in df.columns for col in required_columns):
+            st.error(f"Missing required columns. Expected: {required_columns}")
+            return pd.DataFrame()
+        
+        # Ensure numeric type for Total throughput
+        df['Total throughput'] = pd.to_numeric(df['Total throughput'], errors='coerce')
+        
+        # Drop any rows with NaN values
+        df = df.dropna()
+        
+        # Create a complete date range with all months
+        min_date = df['Date'].min()
+        max_date = df['Date'].max()
+        date_range = pd.date_range(
+            start=min_date,
+            end=max_date,
+            freq='MS'  # Month Start
+        )
+        
+        # Get unique companies
+        companies = df['Company'].unique()
+        
+        # Create all possible combinations of dates and companies
+        dates_companies = [(date, company) for date in date_range for company in companies]
+        df_complete = pd.DataFrame(dates_companies, columns=['Date', 'Company'])
+        
+        # Merge with actual data
+        df = pd.merge(
+            df_complete,
+            df,
+            on=['Date', 'Company'],
+            how='left'
+        ).fillna(0)
+        
+        # Sort by date and company
+        df = df.sort_values(['Date', 'Company'])
+        
+        # Debug information
+        st.sidebar.write("Data range:", 
+                        f"From: {df['Date'].min().strftime('%Y-%m')}", 
+                        f"To: {df['Date'].max().strftime('%Y-%m')}")
         
         return df
     except Exception as e:
@@ -90,7 +150,7 @@ def load_data():
         raise e
 
 def calculate_growth_rates(df_pivot, period='Monthly'):
-    """Calculate year-on-year and period-on-period growth rates"""
+    """Calculate year-on-year and period-on-period growth rates for all dates"""
     try:
         # Ensure index is datetime type
         if not isinstance(df_pivot.index, pd.DatetimeIndex):
@@ -102,22 +162,37 @@ def calculate_growth_rates(df_pivot, period='Monthly'):
         # Calculate total volume
         total_volume = df_pivot.sum(axis=1)
         
-        # Calculate YoY growth
-        if period == 'Monthly':
-            # Calculate YoY growth rate directly using datetime index
-            yoy_growth = total_volume.pct_change(periods=12) * 100
-        elif period == 'Quarterly':
-            # Calculate quarterly YoY growth rate
-            yoy_growth = total_volume.pct_change(periods=4) * 100
-        elif period == 'Semi-annually':
-            # Calculate semi-annual YoY growth rate
-            yoy_growth = total_volume.pct_change(periods=2) * 100
-        else:  # Year-to-date
-            # For YTD, compare with same month last year
-            yoy_growth = total_volume.pct_change(periods=1) * 100
+        # Calculate YoY growth without reindexing to preserve actual data points
+        # First create shifted series for previous year using the original data
+        total_volume_shift = total_volume.shift(12)
         
-        # Calculate period-on-period growth
-        pop_growth = total_volume.pct_change() * 100
+        # Calculate YoY growth only where we have actual data
+        yoy_growth = ((total_volume - total_volume_shift) / total_volume_shift * 100)
+        
+        # Calculate period-on-period growth based on selected period
+        if period == 'Monthly':
+            # Month-on-Month growth
+            pop_growth = total_volume.pct_change(periods=1) * 100
+        elif period == 'Quarterly':
+            # Quarter-on-Quarter growth
+            pop_growth = total_volume.groupby([total_volume.index.year, total_volume.index.quarter]).sum()
+            pop_growth = pop_growth.pct_change() * 100
+            # Reindex back to monthly dates
+            pop_growth = pop_growth.reindex(total_volume.index, method='ffill')
+        elif period == 'Semi-annually':
+            # Half-on-Half growth
+            semester = (total_volume.index.month - 1) // 6
+            pop_growth = total_volume.groupby([total_volume.index.year, semester]).sum()
+            pop_growth = pop_growth.pct_change() * 100
+            # Reindex back to monthly dates
+            pop_growth = pop_growth.reindex(total_volume.index, method='ffill')
+        else:  # Year-to-date
+            # YTD growth
+            ytd_mask = total_volume.index.month <= total_volume.index.max().month
+            pop_growth = total_volume[ytd_mask].groupby(total_volume[ytd_mask].index.year).sum()
+            pop_growth = pop_growth.pct_change() * 100
+            # Reindex back to monthly dates
+            pop_growth = pop_growth.reindex(total_volume.index, method='ffill')
         
     except Exception as e:
         st.warning(f"Unable to calculate some growth rates due to insufficient data: {str(e)}")
@@ -200,10 +275,12 @@ try:
     
     # Add growth rate controls
     st.sidebar.header("Growth Rate Controls")
+    
+    # YoY growth is always shown from Jan-21 onwards, but can be toggled for clarity
     show_yoy = st.sidebar.checkbox(
         "Show Year-on-Year Growth",
         value=True,
-        help="Display year-on-year growth rate"
+        help="Year-on-Year growth is always available from Jan-21 onwards"
     )
     
     # Determine the appropriate period label for PoP growth
@@ -221,23 +298,63 @@ try:
         help=f"Display {pop_label.lower()} growth rate"
     )
     
-    # Filter and process data
-    all_companies = ['SNP', 'GMD', 'PHP', 'VSC', 'CDN']
-    
     # Add company selection in the sidebar
     st.sidebar.header('Filters')
+    
+    # Add date range selection with proper datetime handling
+    min_date = df['Date'].min()
+    max_date = df['Date'].max()
+    
+    st.sidebar.subheader('Date Range')
+    
+    # Date range selection
+    start_date = st.sidebar.date_input(
+        "Start Date",
+        value=min_date,
+        min_value=min_date,
+        max_value=max_date,
+        help="Select the start date for the chart"
+    )
+    
+    end_date = st.sidebar.date_input(
+        "End Date",
+        value=max_date,
+        min_value=min_date,
+        max_value=max_date,
+        help="Select the end date for the chart"
+    )
+    
+    # Add company selection
+    st.sidebar.subheader('Companies')
+    # Get the list of companies that actually exist in the data
+    available_companies = sorted(df['Company'].unique())
     selected_companies = st.sidebar.multiselect(
         "Select Companies",
-        all_companies,
-        default=all_companies,
+        available_companies,
+        default=available_companies,
         help="Choose which companies to display in the chart"
     )
     
-    df_filtered = df[
-        (df['Company'].isin(selected_companies)) & 
-        (df['Date'] >= '2020-01-01') &  # Include from January 2020
-        (df['Date'] <= '2025-07-31')    # Include up to July 2025
-    ]
+    # Create a copy of the dataframe before filtering
+    df_work = df.copy()
+    
+    # Convert date inputs to period for consistent comparison
+    start_period = pd.Period(start_date, freq='M')
+    end_period = pd.Period(end_date, freq='M')
+    df_work['Period'] = df_work['Date'].dt.to_period('M')
+    
+    # Filter data based on selected date range and companies
+    mask = (
+        (df_work['Company'].isin(selected_companies)) & 
+        (df_work['Period'] >= start_period) &
+        (df_work['Period'] <= end_period)
+    )
+    df_filtered = df_work.loc[mask].drop('Period', axis=1).copy()
+    
+    # Show warning if no data in selected range
+    if df_filtered.empty:
+        st.warning("No data available for the selected date range and companies. Please adjust your selection.")
+        st.stop()
 
     # Convert values from TEUs to Thousand TEUs
     df_filtered['Total throughput'] = df_filtered['Total throughput'] / 1000
@@ -245,155 +362,127 @@ try:
     # Aggregate data based on selected period
     df_filtered = aggregate_data(df_filtered, period)
 
-    # Create pivot table
+    # Create pivot table with proper handling of missing values
     df_pivot = df_filtered.pivot_table(
         index='Date',
         columns='Company',
         values='Total throughput',
-        aggfunc='sum'
-    ).fillna(0)
+        aggfunc='sum',
+        fill_value=0  # Replace NaN with 0 during pivot
+    )
     
-    # Ensure datetime index
+    # Ensure datetime index and all months are present
     df_pivot.index = pd.to_datetime(df_pivot.index)
     df_pivot = df_pivot.sort_index()
+    
+    # Reindex to ensure all months are present
+    date_range = pd.date_range(
+        start=df_pivot.index.min().replace(day=1),
+        end=df_pivot.index.max().replace(day=1),
+        freq='MS'
+    )
+    df_pivot = df_pivot.reindex(date_range, fill_value=0)
+    
+    # Calculate row sums (grand totals)
+    grand_totals = df_pivot.sum(axis=1)
 
     # Calculate growth rates
     yoy_growth, pop_growth = calculate_growth_rates(df_pivot, period)
 
-    # Create the figure with secondary y-axis
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    # Prepare data for visualization
+    # Reset index and ensure dates are in correct format
+    df_pivot_reset = df_pivot.reset_index()
     
-    # Define color palette
-    color_map = {
-        'SNP': '#00513E',  # Dark green
-        'GMD': '#00BF6F',  # Bright green
-        'PHP': '#B0794E',  # Brown
-        'VSC': '#939598',  # Gray
-        'CDN': '#000000'   # Black
-    }
+    # Normalize dates to first of month at midnight for consistency
+    df_pivot_reset['Date'] = pd.to_datetime(df_pivot_reset['Date']).dt.normalize().dt.to_period('M').dt.to_timestamp()
+    
+    # Melt the data for visualization
+    chart_data = df_pivot_reset.melt(
+        id_vars=['Date'],
+        value_vars=selected_companies,
+        var_name='Company',
+        value_name='Volume'
+    ).sort_values('Date')
+    
+    # Create the stacked bar chart
+    base_chart = alt.Chart(chart_data).encode(
+        x=alt.X('yearmonth(Date):T',
+                axis=alt.Axis(title='Period', labelAngle=-45, format='%b-%y'),
+                timeUnit='yearmonth'),
+        color=alt.Color('Company:N', 
+                       scale=alt.Scale(scheme='category20'),
+                       legend=alt.Legend(title="Companies"))
+    )
+    
+    bars = base_chart.mark_bar().encode(
+        y=alt.Y('Volume:Q',
+                axis=alt.Axis(title='Container Volume (Thousand TEUs)'),
+                stack='zero'),
+        tooltip=[
+            alt.Tooltip('Date:T', title='Date', format='%b-%y'),
+            alt.Tooltip('Company:N', title='Company'),
+            alt.Tooltip('Volume:Q', title='Volume', format=',.0f')
+        ]
+    )
+    
+    # Create chart title
+    title_text = f"Container Volume by Company ({period})"
+    if show_yoy or show_pop:
+        growth_types = []
+        if show_yoy:
+            growth_types.append("YoY Growth")
+        if show_pop:
+            growth_types.append("PoP Growth")
+        title_text += f" with {' & '.join(growth_types)}"
 
-    # Add bars for each company with specified colors
-    for company in selected_companies:
-        fig.add_trace(
-            go.Bar(
-                name=company,
-                x=df_pivot.index,
-                y=df_pivot[company],
-                marker_color=color_map[company],
-                hovertemplate="Date: %{x}<br>" +
-                             "Volume: %{y:.1f}k TEUs<br>" +
-                             f"Company: {company}<extra></extra>"
-            ),
-            secondary_y=False
-        )
-    
-    # Add YoY growth rate line if enabled and we have data
-    if show_yoy and not yoy_growth.isna().all():
-        fig.add_trace(
-            go.Scatter(
-                name='YoY Growth',
-                x=df_pivot.index,
-                y=yoy_growth,
-                line=dict(color='#FF4B4B', width=2, dash='solid'),
-                hovertemplate="Date: %{x}<br>YoY Growth: %{y:.1f}%<extra></extra>"
-            ),
-            secondary_y=True
-        )
-    
-    # Add period-on-period growth rate line if enabled and we have data
-    if show_pop and not pop_growth.isna().all():
-        growth_label = {
-            'Monthly': 'MoM',
-            'Quarterly': 'QoQ',
-            'Semi-annually': 'HoH',
-            'Year-to-date': 'YTD'
-        }.get(period, 'Period')
+    # Create line charts for growth rates if enabled
+    if show_yoy or show_pop:
+        growth_data = pd.DataFrame({
+            'Date': df_pivot.index,
+            'YoY Growth': yoy_growth if show_yoy else None,
+            'PoP Growth': pop_growth if show_pop else None
+        }).melt(id_vars=['Date'], var_name='Type', value_name='Growth')
         
-        fig.add_trace(
-            go.Scatter(
-                name=f'{growth_label} Growth',
-                x=df_pivot.index,
-                y=pop_growth,
-                line=dict(color='#4B4BFF', width=2, dash='dot'),
-                hovertemplate=f"Date: %{{x}}<br>{growth_label} Growth: %{{y:.1f}}%<extra></extra>"
-            ),
-            secondary_y=True
+        lines = alt.Chart(growth_data).mark_line(point=True).encode(
+            x='Date:T',
+            y=alt.Y('Growth:Q',
+                    axis=alt.Axis(title='Growth Rate (%)', titleColor='#FF4B4B'),
+                    scale=alt.Scale(zero=False)),
+            color=alt.Color('Type:N',
+                          scale=alt.Scale(domain=['YoY Growth', 'PoP Growth'],
+                                        range=['#FF4B4B', '#4B4BFF'])),
+            tooltip=[
+                alt.Tooltip('Date:T', title='Date', format='%b-%y'),
+                alt.Tooltip('Type:N', title='Type'),
+                alt.Tooltip('Growth:Q', title='Growth Rate', format='.1f')
+            ]
         )
-
-    # Update layout for stacked bars and growth lines
-    # Create appropriate title based on period
-    if period == 'Year-to-date':
-        title_text = f"Container Volume and Growth Rates by Company (Year to Date as of {df['Date'].max().strftime('%B %Y')})"
-    elif period == 'Semi-annually':
-        title_text = "Container Volume and Growth Rates by Company (Semi-annual: H1/H2)"
+        
+        # Combine bars and lines
+        chart = alt.layer(bars, lines).resolve_scale(y='independent')
     else:
-        title_text = f"{period} Container Volume and Growth Rates by Company"
+        chart = bars
     
-    fig.update_layout(
-        barmode='stack',
+    # Configure the chart
+    chart = chart.configure_view(
+        strokeWidth=0
+    ).configure_axis(
+        grid=True,
+        gridColor='#E5E5E5',
+        domainColor='#939598',
+        tickColor='#939598'
+    ).properties(
+        width='container',
+        height=500,
         title={
             'text': title_text,
-            'y': 0.95,
-            'x': 0.5,
-            'xanchor': 'center',
-            'yanchor': 'top',
-            'font': {'size': 24, 'color': '#00513E'}
-        },
-        xaxis_title={
-            'text': "Period",
-            'font': {'size': 14, 'color': '#000000'}
-        },
-        hovermode='x unified',
-        showlegend=True,
-        legend_title={
-            'text': "Companies & Growth Rates",
-            'font': {'color': '#00513E'}
-        },
-        legend={
-            'bgcolor': 'rgba(255, 255, 255, 0.9)',
-            'bordercolor': '#939598',
-            'borderwidth': 1
-        },
-        height=600,
-        xaxis={
-            'tickformat': '%b-%y',
-            'tickangle': -45,
-            'gridcolor': '#E5E5E5',
-            'tickfont': {'color': '#000000'}
-        },
-        plot_bgcolor='white'
-    )
-
-    # Update primary y-axis
-    fig.update_yaxes(
-        title_text="Container Volume (Thousand TEUs)",
-        gridcolor='#E5E5E5',
-        gridwidth=0.5,
-        tickfont={'color': '#000000'},
-        secondary_y=False
+            'color': '#00513E',
+            'fontSize': 24
+        }
     )
     
-    # Only show secondary y-axis if any growth rate is enabled
-    if show_yoy or show_pop:
-        fig.update_yaxes(
-            title_text="Growth Rate (%)",
-            gridcolor='#E5E5E5',
-            gridwidth=0.5,
-            tickfont={'color': '#000000'},
-            secondary_y=True,
-            tickformat='.1f'
-        )
-    else:
-        # Hide secondary y-axis when both growth rates are disabled
-        fig.update_yaxes(
-            visible=False,
-            secondary_y=True
-        )
-
-    # Display the plot in Streamlit
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Add data analysis section
+    # Display the chart
+    st.altair_chart(chart, use_container_width=True)    # Add data analysis section
     st.subheader("Data Analysis")
     
     # Show total volume by company
@@ -401,35 +490,119 @@ try:
     total_by_company = df_filtered.groupby('Company')['Total throughput'].sum().sort_values(ascending=False)
     st.bar_chart(total_by_company)
     
-    # Show the raw data with filters
-    st.subheader("Raw Data")
+    # Show detailed data analysis
+    st.subheader("Detailed Data Analysis")
     
-    # Add company filter (Using the same selection as the chart)
-    companies_for_raw_data = st.multiselect(
-        "Select Companies",
-        all_companies,
-        default=selected_companies
-    )
+    # Add tabs for different views
+    tab1, tab2, tab3 = st.tabs(["Raw Data", "Monthly Summary", "Company Analysis"])
     
-    # Add date range filter
-    date_range = st.date_input(
-        "Select Date Range",
-        value=(df_filtered['Date'].min(), df_filtered['Date'].max()),
-        min_value=df_filtered['Date'].min().to_pydatetime(),
-        max_value=df_filtered['Date'].max().to_pydatetime()
-    )
+    with tab1:
+        # Raw data view with filters
+        companies_for_raw_data = st.multiselect(
+            "Select Companies",
+            sorted(df['Company'].unique()),
+            default=selected_companies,
+            key="raw_data_companies"
+        )
+        
+        date_range = st.date_input(
+            "Select Date Range",
+            value=(df_filtered['Date'].min(), df_filtered['Date'].max()),
+            min_value=df_filtered['Date'].min().to_pydatetime(),
+            max_value=df_filtered['Date'].max().to_pydatetime(),
+            key="raw_data_dates"
+        )
+        
+        filtered_data = df_filtered[
+            (df_filtered['Company'].isin(companies_for_raw_data)) &
+            (df_filtered['Date'].dt.date >= date_range[0]) &
+            (df_filtered['Date'].dt.date <= date_range[1])
+        ]
+        
+        st.dataframe(
+            filtered_data.sort_values(['Date', 'Company'])[['Date', 'Company', 'Total throughput']]
+            .style.format({'Total throughput': '{:,.0f}'})
+        )
     
-    # Filter data based on selection
-    filtered_data = df_filtered[
-        (df_filtered['Company'].isin(companies_for_raw_data)) &
-        (df_filtered['Date'].dt.date >= date_range[0]) &
-        (df_filtered['Date'].dt.date <= date_range[1])
-    ]
-    
-    # Show filtered data
-    st.dataframe(
-        filtered_data.sort_values(['Date', 'Company'])[['Date', 'Company', 'Total throughput']]
-    )
+    with tab2:
+        # Monthly summary view
+        st.write("Monthly Container Volume Summary (Thousand TEUs)")
+        
+        # Create monthly summary with more detailed formatting
+        monthly_summary = df_filtered.pivot_table(
+            index='Date',
+            columns='Company',
+            values='Total throughput',
+            aggfunc='sum'
+        ).round(0)
+        
+        # Add total column
+        monthly_summary['Total'] = monthly_summary.sum(axis=1)
+        
+        # Format the index to show month-year
+        monthly_summary.index = monthly_summary.index.strftime('%b-%Y')
+        
+        # Calculate column totals
+        column_totals = monthly_summary.sum().round(0)
+        column_means = monthly_summary.mean().round(0)
+        
+        # Add summary rows
+        monthly_summary.loc['Total'] = column_totals
+        monthly_summary.loc['Average'] = column_means
+        
+        # Create a styled dataframe
+        styled_df = monthly_summary.style.format('{:,.0f}')
+        
+        # Highlight totals row
+        styled_df = styled_df.apply(lambda x: ['background-color: #f0f2f6' if i == len(monthly_summary)-2 else 
+                                             'background-color: #e6e9ef' if i == len(monthly_summary)-1 else ''
+                                             for i in range(len(monthly_summary))], axis=0)
+        
+        # Highlight total column
+        styled_df = styled_df.apply(lambda x: ['background-color: #f0f2f6' if monthly_summary.columns[i] == 'Total' 
+                                             else '' for i in range(len(monthly_summary.columns))], axis=1)
+        
+        # Add borders
+        styled_df = styled_df.set_properties(**{
+            'border': '1px solid #e1e4e8',
+            'padding': '5px'
+        })
+        
+        # Display the styled table
+        st.dataframe(
+            styled_df,
+            height=600  # Make table taller to show more rows
+        )
+        
+        # Show summary statistics
+        st.subheader("Summary Statistics")
+        col1, col2, col3 = st.columns(3)
+        
+        # Calculate statistics for each company
+        for i, company in enumerate(monthly_summary.columns[:-1]):  # Exclude 'Total' column
+            with col1 if i % 3 == 0 else col2 if i % 3 == 1 else col3:
+                st.metric(
+                    f"{company}",
+                    f"{column_totals[company]:,.0f}k TEUs",
+                    f"Avg: {column_means[company]:,.0f}k TEUs"
+                )
+        
+    with tab3:
+        # Company analysis
+        st.write("Company Performance Analysis")
+        
+        # Calculate company statistics
+        company_stats = df_filtered.groupby('Company').agg({
+            'Total throughput': ['sum', 'mean', 'min', 'max']
+        }).round(0)
+        
+        company_stats.columns = ['Total Volume', 'Average Monthly Volume', 'Minimum Volume', 'Maximum Volume']
+        company_stats = company_stats.sort_values('Total Volume', ascending=False)
+        
+        # Format the numbers with thousand separators
+        st.dataframe(
+            company_stats.style.format('{:,.0f}')
+        )
 
 except Exception as e:
     st.error(f"An error occurred: {str(e)}")
