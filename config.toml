@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 [theme]
 base = "light"
 primaryColor = "#2D4A22"
@@ -12,3 +13,19 @@ gatherUsageStats = false
 [server]
 headless = true
 port = 8501
+=======
+[theme]
+base = "light"
+primaryColor = "#2D4A22"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F0F2F6"
+textColor = "#262730"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true
+port = 8501
+>>>>>>> d4a3375b61336330aa3631cc2ff60ac968030890

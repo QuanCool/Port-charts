@@ -19,7 +19,7 @@ pip install -r requirements.txt
 
 3. Run the app locally:
 ```bash
-streamlit run streamlit_container_volume.py
+streamlit run container_volume_dashboard.py
 ```
 
 ## Streamlit Cloud Deployment
@@ -27,7 +27,16 @@ streamlit run streamlit_container_volume.py
 1. Push your code to GitHub
 2. Visit [Streamlit Cloud](https://streamlit.io/cloud)
 3. Connect your GitHub repository
-4. Deploy the app by selecting `streamlit_container_volume.py` as the main file
+4. Deploy the app by selecting `container_volume_dashboard.py` as the main file
+
+## Features
+
+- Interactive stacked column charts showing container volume by company
+- Time period controls (Monthly, Quarterly, Semi-annually, Year-to-date)
+- Company selection filters
+- Growth rate analysis (Year-on-Year and Period-on-Period)
+- Top 5 companies highlighted with custom colors
+- Light theme optimized interface
 
 ## Data Source
 The app uses monthly container volume data from "Monthly container volume -  Quarterly sales and NPATMI_Jul 2025.xlsx"
