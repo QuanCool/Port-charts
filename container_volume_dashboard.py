@@ -115,7 +115,7 @@ def load_data():
     try:
         # Read the Excel file
         df = pd.read_excel(
-            'Monthly container volume -  Quarterly sales and NPATMI_Jul 2025.xlsx', 
+            'data/Monthly container volume -  Quarterly sales and NPATMI_Jul 2025.xlsx', 
             sheet_name='Monthly container volume'
         )
         
@@ -603,7 +603,7 @@ def load_data():
     try:
         # Read the Excel file
         df = pd.read_excel(
-            'Monthly container volume -  Quarterly sales and NPATMI_Jul 2025.xlsx', 
+            'data/Monthly container volume -  Quarterly sales and NPATMI_Jul 2025.xlsx', 
             sheet_name='Monthly container volume'
         )
         
